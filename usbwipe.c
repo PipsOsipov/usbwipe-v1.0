@@ -6,7 +6,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#define BLOCKSIZE 16384
+#define BLOCKSIZE 1048576
 #define MAXNAME 64
 #define MAXDEV 16
 #define MAXPATH 128
@@ -110,7 +110,7 @@ int main(void) {
 
 
 int scan_usb(struct usbdevice usb[]){
-	char fullpath[MAXPATH]; 								// буфер для сборки полного пути
+	char fullpath[MAXPATH]; 								
 	char vendorpath[MAXPATH];
 	char modelpath[MAXPATH];
 	char usbname[MAXNAME];
@@ -156,7 +156,7 @@ int scan_usb(struct usbdevice usb[]){
         		get_usb_model(modelpath, usbmodel, sizeof(usbmodel));
         		snprintf(usb[dev_count].vendor, sizeof(usb[dev_count].vendor), "%s", usbname);
         		snprintf(usb[dev_count].model, sizeof(usb[dev_count].model), "%s", usbmodel);
-			snprintf(usb[dev_count].path, sizeof(usb[dev_count].path), "/dev/%s", entry -> d_name);	//формирование пути для очистки
+			snprintf(usb[dev_count].path, sizeof(usb[dev_count].path), "/dev/%s", entry -> d_name);	//формирование пути для wipe()
 			usb[dev_count].size = get_usb_size(sizepath);
 			
 			//printf("\nUSBNAME = %s\n", usbname);
@@ -231,5 +231,67 @@ void get_usb_model(const char usbmodelpath[], char usbmodel[], size_t max_len){
 }
 
 void wipe(struct usbdevice *usb){
+	printf("\nЗапускаю очистку данных с устройства %s %s ...\n", usb -> vendor, usb -> model);
+	
+	int fd = open(usb->path, O_WRONLY);					// открытие устройства для записи
+	if (fd == -1){
+		fprintf(stderr, "Ошибка открытия %s\n", usb->path);
+		fprintf(stderr, "Запустите программу с правами суперпользователя!\n");
+		return;
+	}
+	
+	unsigned char *buffer = malloc(BLOCKSIZE);
+	if (!buffer) {
+		perror("Ошибка выделения памяти для буфера");			// подготовка буфера 
+		close(fd);
+		return;
+	}
+	memset(buffer, 0x00, BLOCKSIZE);					
+	
+	unsigned long long total_bytes_written = 0;
+	unsigned long long last_reported_bytes = 0;				
+	ssize_t bytes_written;							
+	
+	printf("Обработано: 0 МБ / %llu МБ", usb->size / (1024 * 1024));
+	fflush(stdout);
 
+	while (total_bytes_written < usb->size) {
+        
+		size_t to_write = BLOCKSIZE;
+		if (usb->size - total_bytes_written < BLOCKSIZE) {  		// сколько байт осталось до конца флешки
+			to_write = usb->size - total_bytes_written;
+		}
+
+		bytes_written = write(fd, buffer, to_write);
+        
+		if (bytes_written <= 0) {
+			if (errno == ENOSPC) { 					// ENOSPC - нет места на диске
+				break; 
+			}
+			perror("\nКритическая ошибка при записи");
+			break;
+		}
+
+		total_bytes_written += bytes_written;
+
+		if (total_bytes_written - last_reported_bytes >= (100 * 1024 * 1024) || total_bytes_written == usb->size) {
+			last_reported_bytes = total_bytes_written;
+
+			printf("\rОбработано: %llu МБ / %llu МБ", 
+			       total_bytes_written / (1024 * 1024), 
+			       usb->size / (1024 * 1024));
+			fflush(stdout);
+		}
+	}
+	printf("\nВНИМАНИЕ!!! НЕ ДОСТАВАЙТЕ USB УСТРОЙСТВО! РАБОТАЕТ FSYNC()...\n");
+	if (fsync(fd) == -1) {
+		perror("Ошибка выполнения fsync");
+	} else {
+		printf("Успешно!\n");
+	}
+
+	printf("Очистка завершена. Уничтожено: %llu байт.\n", total_bytes_written);
+
+	free(buffer);
+	close(fd);
 }
